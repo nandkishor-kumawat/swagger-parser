@@ -7,196 +7,209 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-json_output = None
-
-
-def get_json_data():
-    global json_output
-    if json_output:
-        return json_output
-    url = os.getenv('SWAGGER_URL')
-    response = requests.get(url)
-    json_output = response.json()
-    return json_output
-
-
-def get_request_body(method_data):
-    try:
-        return method_data['requestBody']['content']['application/json']['schema']['$ref']
-    except KeyError:
-        return None
-
-
-def get_request_params(method_data):
-    parameters = method_data.get('parameters')
-    result = []
-    if not parameters:
-        return result
-
-    for parameter in parameters:
-        if parameter['in'] == 'path':
-            continue
-
-        if "$ref" in parameter['schema']:
-            json_output = get_json_data()
-            components = json_output['components']['schemas']
-            schema = get_scheme_by_ref(components, parameter['schema']['$ref'])
-            val = set_default_values(schema)
-            result.append({
-                "name": parameter['name'],
-                "type": val,
-            })
-            continue
-
-        result.append({
-            "name": parameter['name'],
-            "type": parameter['schema']['type'],
-        })
-    return result
-
-
-def filter_paths_by_tag(paths, tag):
-
-    result = []
-    for path, path_data in paths.items():
-        for method, method_data in path_data.items():
-            if tag not in method_data['tags']:
-                continue
-
-            requestBody = get_request_body(method_data)
-            parameters = get_request_params(method_data)
-            repl = r'/api/v{version}/'
-            endopoint = re.sub(repl, '', path, flags=re.IGNORECASE)
-            result.append({
-                'endpoint': endopoint,
-                'method': method,
-                'parameters': parameters,
-                'requestBody': requestBody,
-            })
-    return result
-
 
 def pf(data):
-    print(json.dumps(data, indent=3), '\n')
+    print('\n', json.dumps(data, indent=3), '\n')
 
 
-def get_scheme_by_ref(components, ref):
-    key = ref.split('/')[-1]
-    schema = components[key]
-    body = {}
+class SwaggerParser:
 
-    if 'properties' not in schema:
-        return schema
+    """
+    SwaggerParser class is used to parse the swagger json data and generate test controller for each tag.
 
-    for key, value in schema['properties'].items():
-        if '$ref' in value:
-            body[key] = get_scheme_by_ref(components, value['$ref'])
-        elif 'items' in value and '$ref' in value['items']:
-            data = get_scheme_by_ref(components, value['items']['$ref'])
-            body[key] = [data]
-        else:
-            body[key] = value
+    Example usage:
+    parser = SwaggerParser()
+    parser.generate_test_controller("Bank")
 
-    return body
+    """
 
+    def __init__(self):
+        self.loaded = False
+        self.load_data()
 
-def create_url_string(item):
-    parameters = item['parameters']
-    endpoint = item['endpoint']
-    if not parameters:
-        return endpoint
+    def load_data(self, url=os.getenv('SWAGGER_URL')):
+        self.url = url
+        try:
+            response = requests.get(url)
+            self.__json_data = response.json()
+            self.__paths = self.__json_data['paths']
+            self.__components = self.__json_data['components']['schemas']
+            self.loaded = True
+        except Exception as e:
+            print(f'Error: {e}')
 
-    result = [f'{p["name"]}={p["type"]}' for p in parameters]
-    params = '&'.join(result)
-    return f'{endpoint}?{params}'
+    def get_all_tags(self):
+        result = set()
+        for path_data in self.__paths.values():
+            for data in path_data.values():
+                [tag] = data['tags']
+                result.add(tag)
+        return list(result)
 
+    def __get_request_body(self, method_data):
+        try:
+            return method_data['requestBody']['content']['application/json']['schema']['$ref']
+        except KeyError:
+            return None
 
-def save_file(file_name, data):
-    with open(file_name, 'w') as file:
-        json.dump(data, file, indent=3)
+    def __get_scheme_by_ref(self, ref):
+        key = ref.split('/')[-1]
+        schema = self.__components[key]
+        body = {}
 
+        if 'properties' not in schema:
+            return schema
 
-def set_default_values(value):
-    if 'type' in value:
-        type_ = value['type']
-        if type_ == 'string':
-            if 'enum' in value:
-                return value['enum'][0]
-            if 'format' in value:
-                if value['format'] == 'date-time':
-                    return '2024-01-01T00:00:00Z'
-            return 'string'
-        elif type_ == 'integer' or type_ == 'number':
-            return 0
-        elif type_ == 'boolean':
-            return True
-        elif type_ == 'array':
-            return [value['items']['type']]
-        else:
-            return type_
+        for key, value in schema['properties'].items():
+            if '$ref' in value:
+                body[key] = self.__get_scheme_by_ref(value['$ref'])
+            elif 'items' in value and '$ref' in value['items']:
+                data = self.__get_scheme_by_ref(value['items']['$ref'])
+                body[key] = [data]
+            else:
+                body[key] = value
 
-    body = {}
+        return body
 
-    for key, val in value.items():
-        if isinstance(val, dict):
-            body[key] = set_default_values(val)
-        elif isinstance(val, list):
-            body[key] = [set_default_values(v) for v in val]
-    return body
+    def __set_default_values(self, value):
+        if 'type' in value:
+            type_ = value['type']
+            if type_ == 'string':
+                if 'enum' in value:
+                    return value['enum'][0]
+                if 'format' in value:
+                    if value['format'] == 'date-time':
+                        return '2024-01-01T00:00:00Z'
+                return 'string'
+            elif type_ == 'integer' or type_ == 'number':
+                return 0
+            elif type_ == 'boolean':
+                return True
+            elif type_ == 'array':
+                return [value['items']['type']]
+            else:
+                return type_
 
+        body = {}
 
-def get_table_details(table):
-    json_output = get_json_data()
-    paths = json_output['paths']
-    components = json_output['components']['schemas']
+        for key, val in value.items():
+            if isinstance(val, dict):
+                body[key] = self.__set_default_values(val)
+            elif isinstance(val, list):
+                body[key] = [self.__set_default_values(v) for v in val]
+        return body
 
-    result = filter_paths_by_tag(paths, table)
+    def __get_request_params(self, method_data):
+        parameters = method_data.get('parameters', [])
+        result = []
 
-    details = []
+        for parameter in parameters:
+            if parameter['in'] == 'path':
+                continue
 
-    for item in result:
-        url = create_url_string(item)
+            if "$ref" in parameter['schema']:
+                schema = self.__get_scheme_by_ref(parameter['schema']['$ref'])
+                val = self.__set_default_values(schema)
+                result.append({
+                    "name": parameter['name'],
+                    "type": val,
+                })
+                continue
+
+            result.append({
+                "name": parameter['name'],
+                "type": parameter['schema']['type'],
+            })
+        return result
+
+    def __filter_paths_by_tag(self, tag):
+        result = []
+        for path, path_data in self.__paths.items():
+            for method, method_data in path_data.items():
+                if tag not in method_data['tags']:
+                    continue
+
+                requestBody = self.__get_request_body(method_data)
+                parameters = self.__get_request_params(method_data)
+                repl = r'/api/v{version}/'
+                endopoint = re.sub(repl, '', path, flags=re.IGNORECASE)
+                result.append({
+                    'endpoint': endopoint,
+                    'method': method,
+                    'parameters': parameters,
+                    'requestBody': requestBody,
+                })
+        return result
+
+    @staticmethod
+    def __create_url_string(item):
+        parameters = item['parameters']
+        endpoint = item['endpoint']
+        if not parameters:
+            return endpoint
+
+        result = [f'{p["name"]}={p["type"]}' for p in parameters]
+        params = '&'.join(result)
+        return f'{endpoint}?{params}'
+
+    def __get_table_details(self, tag):
+        result = self.__filter_paths_by_tag(tag)
+        details = []
+
+        for item in result:
+            url = self.__create_url_string(item)
+            method = item['method']
+            filename = ""
+            json_body = ""
+
+            if item['requestBody']:
+                body = self.__get_scheme_by_ref(item['requestBody'])
+                json_body = self.__set_default_values(body)
+                filename = self.__generate_json_file_name(item)
+
+            details.append({
+                "endpoint": item['endpoint'],
+                "url": url,
+                "method": method,
+                "body": json_body,
+                "filename": filename,
+            })
+        return details
+
+    @staticmethod
+    def __save_file(file_name, data):
+        with open(file_name, 'w') as file:
+            json.dump(data, file, indent=3)
+
+    @staticmethod
+    def __convert_endpoint(endpoint):
+        return re.sub(r'/{(.*?)\}', r'\1', endpoint)
+
+    @staticmethod
+    def __get_controller_suffix(method):
+        dc = {'post': 'Create', 'put': 'Update'}
+        return dc.get(method.lower(), method.capitalize())
+
+    @staticmethod
+    def __get_filename_suffix(m):
+        dc = {'post': 'Add', 'put': 'Update'}
+        return dc.get(m.lower(), '')
+
+    def __generate_json_file_name(self, item):
         method = item['method']
-        json_body = ""
+        ep = item['endpoint']
+        suffix = self.__get_filename_suffix(method)
+        cp = self.__convert_endpoint(ep)
+        return f'{suffix}{cp.split('/')[-1]}.json'
 
-        if item['requestBody']:
-            body = get_scheme_by_ref(components, item['requestBody'])
-            json_body = set_default_values(body)
-
-        details.append({
-            "endpoint": item['endpoint'],
-            "url": url,
-            "method": method,
-            "body": json_body
-        })
-    return details
-
-
-def get_controller_suffix(method):
-    m = method.lower()
-    dc = {
-        'post': 'Create',
-        'put': 'Update',
-    }
-    return dc.get(m, m.capitalize())
-
-
-def generate_json_file_name(item):
-    method = item['method']
-    ep = item['endpoint']
-    suffix = 'Add' if method == 'post' else 'Update' if method == 'put' else ''
-    return f'{suffix}{ep.split('/')[-1]}.json'
-
-
-def generate_csharp_test_methods(data):
-    methods = []
-    for item in data:
+    def __generate_csharp_test_method(self, item):
         url = item['url']
         http_method = item['method'].capitalize()
-        endpoint = item['endpoint'].split('/')[-1]
-        filename = generate_json_file_name(item)
+        endpoint = self.__convert_endpoint(item['endpoint'])
+        endpoint = endpoint.split('/')[-1]
+        filename = item['filename']
         body = item['body']
-        suffix = get_controller_suffix(http_method)
+        suffix = self.__get_controller_suffix(http_method)
 
         request = f'var {endpoint}Request = File.ReadAllText($"{{_filePath}}{
             filename}");'
@@ -211,7 +224,7 @@ def generate_csharp_test_methods(data):
 
         method = f"""
         [Fact]
-        public async Task {suffix}{endpoint}()
+        public async Task {"" if endpoint.startswith('Get') else suffix}{endpoint}()
         {{
             {request_body()}
             var responseString = await result.Content.ReadAsStringAsync();
@@ -219,24 +232,37 @@ def generate_csharp_test_methods(data):
             Assert.True(result.StatusCode == System.Net.HttpStatusCode.OK);
         }}
         """
-        methods.append(method)
-    return methods
 
+        return method
 
-def generate_test_controller(table, details):
-    os.makedirs(f'Data/{table}/RequestJson', exist_ok=True)
+    def generate_test_controller(self, tag):
+        if not self.loaded:
+            print('Data not loaded')
+            return
 
-    for detail in details:
-        body = detail['body']
-        method = detail['method']
+        self.tag = tag
+        os.makedirs(f'Data/{self.tag}/RequestJson', exist_ok=True)
 
-        if body:
-            fn = generate_json_file_name(detail)
-            save_file(f'Data/{table}/RequestJson/{fn}', body)
+        details = self.__get_table_details(self.tag)
 
-        methods = generate_csharp_test_methods(details)
+        if not details:
+            print(f'No data found for {self.tag}')
+            os.rmdir(f'Data/{self.tag}/RequestJson')
+            os.rmdir(f'Data/{self.tag}')
+            return
 
-        with open(f'Data/{table}/{table}ControllerTests.cs', 'w') as file:
+        methods = []
+        for detail in details:
+            body = detail['body']
+
+            if body:
+                file_path = f'Data/{self.tag}/RequestJson/{detail['filename']}'
+                self.__save_file(file_path, body)
+
+            method = self.__generate_csharp_test_method(detail)
+            methods.append(method)
+
+        with open(f'Data/{self.tag}/{self.tag}ControllerTests.cs', 'w') as file:
             file.write(f"""using Newtonsoft.Json;
 using PropVivo.API.IntegrationTests.Helper;
 using System;
@@ -246,15 +272,15 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 
-namespace PropVivo.API.IntegrationTests.{table}
+namespace PropVivo.API.IntegrationTests.{self.tag}
 {'{'}
-    public class {table}ControllerTests
+    public class {self.tag}ControllerTests
     {'{'}
         private readonly IHttpClientService _httpClientService;
         private string _apiUrl = "{os.getenv('API_URL')}";
-        private string _filePath = string.Format(CultureInfo.CurrentCulture, string.Format("..\\\\..\\\\..\\\\{{0}}\\\\RequestJson\\\\", "{table}"));
+        private string _filePath = string.Format(CultureInfo.CurrentCulture, string.Format("..\\\\..\\\\..\\\\{{0}}\\\\RequestJson\\\\", "{self.tag}"));
         private string _token = "{os.getenv('TOKEN')}";
-        public {table}ControllerTests()
+        public {self.tag}ControllerTests()
         {{
             this._httpClientService = new HttpClientService();
         }}
@@ -267,25 +293,14 @@ namespace PropVivo.API.IntegrationTests.{table}
 """)
 
 
-def get_all_tags():
-    json_output = get_json_data()
-    paths = json_output['paths']
-
-    result = set()
-    for path_data in paths.values():
-        for data in path_data.values():
-            [tag] = data['tags']
-            result.add(tag)
-    return list(result)
-
-
 if __name__ == '__main__':
-    os.makedirs('Data', exist_ok=True)
-    tables = get_all_tags()
+    parser = SwaggerParser()
+
+    tables = ["FiscalYear"]
+    # tables = parser.get_all_tags()
     for tag in tqdm(tables):
         try:
-            details = get_table_details(tag)
-            generate_test_controller(tag, details)
+            parser.generate_test_controller(tag)
         except Exception as e:
-            print(f'Error: {tag}')
+            print(f'Error: {tag} {e}')
             break
