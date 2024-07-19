@@ -1,0 +1,4 @@
+/.venv
+/Data
+swagger.json
+.env
