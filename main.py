@@ -230,9 +230,7 @@ class SwaggerParser:
             var responseString = await result.Content.ReadAsStringAsync();
             var actualResult = JsonConvert.DeserializeObject<dynamic>(responseString);
             Assert.True(result.StatusCode == System.Net.HttpStatusCode.OK);
-        }}
-        """
-
+        }}"""
         return method
 
     def generate_test_controller(self, tag):
@@ -262,35 +260,15 @@ class SwaggerParser:
             method = self.__generate_csharp_test_method(detail)
             methods.append(method)
 
-        with open(f'Data/{self.tag}/{self.tag}ControllerTests.cs', 'w') as file:
-            file.write(f"""using Newtonsoft.Json;
-using PropVivo.API.IntegrationTests.Helper;
-using System;
-using System.Collections.Generic;
-using System.Globalization;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
+        with open('TestTemplate.template', 'r') as template_file:
+            template_content = template_file.read()
+            content = template_content.replace('{tag}', self.tag)
+            content = content.replace('{api_url}', os.getenv('API_URL'))
+            content = content.replace('{token}', os.getenv('TOKEN'))
+            content = content.replace('{methods}', '\n'.join(methods))
 
-namespace PropVivo.API.IntegrationTests.{self.tag}
-{'{'}
-    public class {self.tag}ControllerTests
-    {'{'}
-        private readonly IHttpClientService _httpClientService;
-        private string _apiUrl = "{os.getenv('API_URL')}";
-        private string _filePath = string.Format(CultureInfo.CurrentCulture, string.Format("..\\\\..\\\\..\\\\{{0}}\\\\RequestJson\\\\", "{self.tag}"));
-        private string _token = "{os.getenv('TOKEN')}";
-        public {self.tag}ControllerTests()
-        {{
-            this._httpClientService = new HttpClientService();
-        }}
-""")
-            for method in methods:
-                file.write(method)
-            file.write("""
-    }
-}
-""")
+        with open(f'Data/{self.tag}/{self.tag}ControllerTests.cs', 'w') as file:
+            file.write(content)
 
 
 if __name__ == '__main__':
